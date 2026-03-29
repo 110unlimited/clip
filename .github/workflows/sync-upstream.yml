@@ -1,0 +1,77 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # Every Monday at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/paperclipai/paperclip.git || true
+          git fetch upstream master
+
+      - name: Check for changes
+        id: check
+        run: |
+          if git diff --quiet main..upstream/master; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create sync branch and PR
+        if: steps.check.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="sync/upstream-$(date +%Y%m%d)"
+          git checkout -b "$BRANCH"
+          git merge upstream/master --no-edit || true
+
+          if git diff --check HEAD 2>/dev/null; then
+            git push origin "$BRANCH"
+            gh pr create \
+              --title "Sync upstream $(date +%Y-%m-%d)" \
+              --body "$(cat <<'EOF'
+          ## Summary
+          - Automated sync from [paperclipai/paperclip](https://github.com/paperclipai/paperclip) master
+
+          **Review merge conflicts (if any) before merging.**
+          EOF
+          )" \
+              --base main \
+              --head "$BRANCH"
+          else
+            echo "Merge conflicts detected — pushing branch for manual resolution"
+            git add -A
+            git commit -m "sync: merge upstream with conflicts" --no-verify || true
+            git push origin "$BRANCH"
+            gh pr create \
+              --title "Sync upstream $(date +%Y-%m-%d) (conflicts)" \
+              --body "$(cat <<'EOF'
+          ## Summary
+          - Automated sync from [paperclipai/paperclip](https://github.com/paperclipai/paperclip) master
+          - **Has merge conflicts** — resolve manually before merging.
+          EOF
+          )" \
+              --base main \
+              --head "$BRANCH"
+          fi
